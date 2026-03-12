@@ -31,13 +31,18 @@ for (const file of fs.readdirSync(path.join(__dirname, 'events')).filter(f => f.
 }
 
 const { addLog } = require('./utils/logger');
+addLog('INFO', 'Bot process initialized.');
+
+// Start the dashboard immediately so Render sees the app as "Live"
+startDashboard(client);
 
 // Initialise play-dl with YouTube cookies FIRST, then login
 setupPlayDl().then(() => {
+    addLog('INFO', 'play-dl setup complete.');
+    
     if (!process.env.DISCORD_TOKEN) {
         console.error('❌ CRITICAL: DISCORD_TOKEN is missing in environment variables!');
         addLog('ERROR', 'DISCORD_TOKEN is missing in Render environment variables.');
-        startDashboard(client);
         return;
     }
 
@@ -45,8 +50,6 @@ setupPlayDl().then(() => {
         console.error('❌ Failed to login to Discord:', err.message);
         addLog('ERROR', `Login failed: ${err.message}`);
     });
-    
-    startDashboard(client);
     
     // 24/7 Connectivity: Self-ping the dashboard
     if (process.env.DASHBOARD_URL) {
