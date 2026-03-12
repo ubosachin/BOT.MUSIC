@@ -3,3 +3,4 @@ node_modules/
 *.log
 cookies.json
 .DS_Store
+*-player-script.js
