@@ -88,75 +88,37 @@ function buildYtDlpArgs(url, fmt, cookiesFile, clientArgs) {
     return args;
 }
 
-function createYtDlpStream(url, isLive = false, forceNoCookies = false) {
-    // Format priority:
-    //   - Normal videos: prefer opus/webm, fall back to m4a, then anything audio
-    //   - Livestreams:   just take bestaudio (HLS/DASH — no webm available)
-    const fmt = isLive
-        ? 'bestaudio'
-        : 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best';
-
-    // ── Client strategy ───────────────────────────────────────────────────────
-    // 1. web_creator  — bypasses n-challenge/signature when cookies are present
-    //                   (may emit a 'GVS PO Token' warning, but still streams)
-    // 2. web          — standard client + EJS remote solver as last resort
-    const useCookies = COOKIES_FILE && !forceNoCookies;
-    const primaryArgs = [
-        '--extractor-args', 'youtube:player_client=ios,android,web_creator',
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        '--force-ipv4',
-        '--buffer-size', '128K',
+/**
+ * Creates a high-stability audio pipeline using FFmpeg.
+ * It takes a direct stream URL and transcodes it to Ogg/Opus.
+ */
+function createFFmpegStream(url) {
+    const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
+    const args = [
+        '-analyzeduration', '0',
+        '-loglevel', '0',
+        '-i', url,
+        '-f', 's16le',
+        '-ar', '48000',
+        '-ac', '2',
+        'pipe:1',
     ];
 
-    const args = buildYtDlpArgs(url, fmt, useCookies ? COOKIES_FILE : null, primaryArgs);
-
-    // Support multi-part commands (e.g. "python3 -m yt_dlp")
-    const ytPath = getYT_DLP();
-    const cmdParts = ytPath.split(' ');
-    const bin = cmdParts[0];
-    const finalArgs = [...cmdParts.slice(1), ...args];
-
-    // Pass full environment so yt-dlp can find its cache (HOME, PATH, etc.)
-    const proc = spawn(bin, finalArgs, {
+    const proc = spawn(ffmpegBin, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
     });
 
-    // Collect stderr — surface ERRORs to the caller, suppress known-harmless warnings
-    const IGNORED_WARNINGS = [
-        'GVS PO Token',       // web_creator client warning — streams still work
-        'po_token=web_creator', // same
-    ];
-    let lastError = null;
     proc.stderr.on('data', chunk => {
         const line = chunk.toString().trim();
-        if (!line) return;
-        if (IGNORED_WARNINGS.some(w => line.includes(w))) return; // suppress harmless noise
-        console.warn(`[yt-dlp] ${line}`);
-        
-        // Error capture logic
-        if (line.includes('ERROR:') || line.includes('cookies are no longer valid')) {
-            lastError = line;
-        }
+        if (line) console.warn(`[FFmpeg] ${line}`);
     });
 
-    proc.stdout.on('data', chunk => {
-        if (!proc.hasSentData) {
-            console.log(`[Debug] yt-dlp PIPE: First chunk received (${chunk.length} bytes)`);
-            proc.hasSentData = true;
-        }
-    });
-
-    // Handle broken pipe errors more gracefully
     proc.on('error', err => {
-        if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
-            // Harmless in many cases when player stops
-            return;
-        }
-        console.error(`[yt-dlp] Process error: ${err.message}`);
+        if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+        console.error(`[FFmpeg] Process error: ${err.message}`);
     });
 
-    return { stream: proc.stdout, proc, getError: () => lastError };
+    return { stream: proc.stdout, proc };
 }
 
 
@@ -392,56 +354,18 @@ class MusicPlayer {
             console.log(`[Player] Validating Stream: ${streamUrl}`);
 
             // ── Step 2: Spawn yt-dlp, pipe audio → Discord ────────────────
-            console.log(`[Player] Fetching stream via yt-dlp${forceNoCookies ? ' (COOKIES DISABLED FALLBACK)' : ''}…`);
-            // Livestreams (durationInSec === 0) need a different format selector
-            const isLive = !song.durationInSec || song.durationInSec === 0;
-            const { stream: ytStream, proc: ytProc, getError } = createYtDlpStream(streamUrl, isLive, forceNoCookies);
-            this._ytdlpProc = ytProc;
+            // ── Step 2: Resolve Direct URL & Transcode ──────────────────
+            console.log(`[Player] Resolving direct stream URL…`);
+            const info = await getYtDlpInfo(streamUrl);
+            const rawStreamUrl = info.streamUrl;
 
-            // Wait for data to flow — but also honour yt-dlp ERROR lines and exit codes.
-            await new Promise((resolve, reject) => {
-                let settled = false;
-                const done = (fn) => { if (!settled) { settled = true; fn(); } };
+            console.log(`[Player] Fetching stream via FFmpeg-Core…`);
+            const { stream: ffStream, proc: ffProc } = createFFmpegStream(rawStreamUrl);
+            this._ytdlpProc = ffProc;
 
-                ytProc.once('error', err => done(() => reject(err)));
-                ytStream.once('error', err => done(() => reject(err)));
-
-                ytProc.once('exit', code => {
-                    if (code !== 0) {
-                        done(() => reject(new Error(
-                            getError() || `yt-dlp exited with code ${code}`
-                        )));
-                    }
-                });
-
-                ytStream.once('readable', () => {
-                    setTimeout(() => {
-                        const err = getError();
-                        if (err) {
-                            done(() => reject(new Error(err)));
-                        } else {
-                            done(() => resolve());
-                        }
-                    }, 800); // Increased wait for stability
-                });
-            });
-
-            // ── Step 3: Transcode to Raw PCM ─────────────────────────────
-            // Explicit transcoding is the most stable for cloud environments
-            const transcoder = new prism.FFmpeg({
-                args: [
-                    '-analyzeduration', '0',
-                    '-loglevel', '0',
-                    '-f', 's16le',
-                    '-ar', '48000',
-                    '-ac', '2',
-                ],
-            });
-
-            const streamPipe = ytStream.pipe(transcoder);
-
+            // ── Step 3: Hand stream to @discordjs/voice ───────────────────
             console.log(`[Debug] Creating AudioResource (Type: Raw PCM)...`);
-            this.resource = createAudioResource(streamPipe, {
+            this.resource = createAudioResource(ffStream, {
                 inputType:    StreamType.Raw,
                 inlineVolume: true,
             });
@@ -580,8 +504,12 @@ class MusicPlayer {
                     if (picked) break;
                     console.log(`[Player] Autoplay search via yt-dlp: "${query}"`);
                     try {
-                        picked = await getYtDlpSearch(query);
-                        // Basic filtering for length/safety if needed, but getYtDlpSearch is usually precise
+                        const candidate = await getYtDlpSearch(query);
+                        if (candidate && !this._autoplaySeen.has(candidate.url)) {
+                            picked = candidate;
+                        } else if (candidate) {
+                            console.log(`[Player] Autoplay skipped duplicate: ${candidate.title}`);
+                        }
                     } catch (e) {
                         console.warn(`[Player] Autoplay search failed for query "${query}": ${e.message}`);
                     }

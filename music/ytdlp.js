@@ -123,6 +123,7 @@ async function getYtDlpInfo(url, forceNoCookies = false) {
                     title:         json.title,
                     artist:        json.uploader || json.channel || '',
                     url:           json.webpage_url || url,
+                    streamUrl:     json.url, // CRITICAL: This is the direct media URL
                     thumbnail:     json.thumbnail || '',
                     durationRaw:   json.duration_string || '',
                     durationInSec: json.duration || 0,
