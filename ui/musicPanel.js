@@ -1,140 +1,203 @@
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+/**
+ * ui/musicPanel.js
+ *
+ * Ultra-premium, Gen-Z styled music control panel.
+ * Designed to look like a modern streaming app (Spotify/Apple Music).
+ */
 
-const LOOP_LABELS = ['Off', 'Song 🔂', 'Queue 🔁'];
-const LOOP_EMOJIS = ['🔁', '🔂', '♾️'];
+'use strict';
 
-function formatTime(seconds = 0) {
-    if (!seconds || isNaN(seconds) || seconds < 0) return '0:00';
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = Math.floor(seconds % 60);
-    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    return `${m}:${String(s).padStart(2, '0')}`;
+const {
+    EmbedBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ActionRowBuilder,
+} = require('discord.js');
+
+const PROGRESS_EMPTY = '▢';
+const PROGRESS_FULL = '▰';
+const PROGRESS_HEAD = '🔘';
+
+/**
+ * Modern Progress Bar
+ */
+function buildProgressBar(current, total, size = 15) {
+    if (!total || total === 0) return `${PROGRESS_HEAD}${PROGRESS_EMPTY.repeat(size)}`;
+    const progress = Math.min(current / total, 1);
+    const filledSize = Math.round(size * progress);
+    const emptySize = size - filledSize;
+
+    const bar = PROGRESS_FULL.repeat(filledSize) + PROGRESS_HEAD + PROGRESS_EMPTY.repeat(Math.max(0, emptySize));
+    return `**${bar}**`;
 }
 
-function parseDuration(raw) {
-    if (!raw) return 0;
-    const parts = raw.split(':').map(Number);
-    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return 0;
+/**
+ * Format seconds to M:SS or H:MM:SS
+ */
+function formatTime(s) {
+    if (!s || isNaN(s)) return '0:00';
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = Math.floor(s % 60);
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+    return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
-function buildProgressBar(elapsed, total, len = 20) {
-    if (!total || total <= 0) return '`🔴 LIVE`';
-    const e = Math.min(elapsed, total);
-    const p = Math.round((e / total) * len);
-    const bar = '█'.repeat(p) + '░'.repeat(Math.max(0, len - p));
-    return `\`${formatTime(e)}\` \`[${bar}]\` \`${formatTime(total)}\``;
+/**
+ * Session duration tracker
+ */
+function getSessionTime(player) {
+    if (!player._sessionStart) return '0:00';
+    const elapsed = Math.floor((Date.now() - player._sessionStart) / 1000);
+    return formatTime(elapsed);
 }
 
-function buildMusicPanel(player) {
-    const song = player.currentSong;
-    if (!song) return { content: '❔ No song playing.', embeds: [], components: [] };
+/**
+ * Main Now Playing Panel
+ */
+function buildNowPlayingEmbed(song, player) {
+    const cur = player.getCurrentTime();
+    const total = song.durationInSec || 0;
+    
+    // Dynamic color based on source
+    const embedColor = song.source === 'spotify' ? '#1DB954' : '#FF0000';
 
-    const elapsed = player.getElapsedSeconds();
-    const total = parseDuration(song.duration);
-    const progressBar = buildProgressBar(elapsed, total);
-    const color = player.paused ? 0xFFA500 : 0x5865F2;
-    const requester = song.requestedBy === 'autoplay' ? '🤖 Autoplay' : `<@${song.requestedBy}>`;
+    if (!player._sessionStart) player._sessionStart = Date.now();
+    if (!player._songsPlayed) player._songsPlayed = 0;
+
+    const progressBar = buildProgressBar(cur, total);
+    const timeInfo = `\`${formatTime(cur)} / ${song.durationRaw || formatTime(total)}\``;
+
+    // Queue Preview (Next 3 songs)
+    const nextSongs = player.queue.songs.slice(0, 3);
+    let upNextStr = nextSongs.length > 0 
+        ? nextSongs.map((s, i) => `\`${i + 1}.\` [${s.title}](${s.url})`).join('\n')
+        : '_No more songs in queue_';
 
     const embed = new EmbedBuilder()
-        .setColor(color)
-        .setAuthor({ name: player.paused ? '⏸ Paused' : '▶️ Now Playing' })
-        .setTitle(song.title.length > 256 ? song.title.slice(0, 253) + '...' : song.title)
+        .setColor(embedColor)
+        .setAuthor({
+            name: player._paused ? '⏸️ PAUSED' : '🎵 NOW PLAYING',
+            iconURL: song.source === 'spotify' ? 'https://upload.wikimedia.org/wikipedia/commons/1/19/Spotify_logo_without_text.svg' : player.client.user.displayAvatarURL()
+        })
+        .setTitle(song.title)
         .setURL(song.url)
-        .setThumbnail(song.thumbnail || null)
-        .setDescription(`\n${progressBar}\n`)
-        .addFields(
-            { name: '⏱️ Duration',    value: song.duration || 'Unknown',                  inline: true },
-            { name: '👤 Requested',   value: requester,                                    inline: true },
-            { name: '🔊 Volume',      value: `${player.volume}%`,                         inline: true },
-            { name: `${LOOP_EMOJIS[player.loopMode]} Loop`, value: LOOP_LABELS[player.loopMode], inline: true },
-            { name: '🪄 Autoplay',   value: player.autoplay ? 'ON ✅' : 'OFF ❌',         inline: true },
-            { name: '📋 Queue',       value: `${player.songs.length} song(s) remaining`,  inline: true },
+        .setDescription(
+            `**${song.artist || 'Unknown Artist'}**\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `${progressBar}\n` +
+            `${timeInfo}\n\n` +
+            `🔹 **Audio Source**: \`${song.source === 'spotify' ? 'Precision Spotify' : 'Standard YouTube'}\`\n` +
+            `🔹 **Decoding**: \`Lossless Engine v2\``
         )
-        .setFooter({ text: 'Use the buttons below to control playback' })
+        .setImage(song.thumbnail)
+        .addFields(
+            { name: '👤 Requester', value: `${song.requestedBy ? `<@${song.requestedBy.id}>` : '`Autoplay ✨`'}`, inline: true },
+            { name: '🌐 Source', value: `\`${song.source === 'spotify' ? 'Spotify Pro' : 'YouTube'}\``, inline: true },
+            { name: '🔊 Volume', value: `\`${player.volume}%\``, inline: true },
+            
+            { name: '🔁 Loop', value: `\`${player.loopMode.toUpperCase()}\``, inline: true },
+            { name: '✨ Smart Autoplay', value: `\`${player.autoplay ? 'Active' : 'Disabled'}\``, inline: true },
+            { name: '📜 Queue', value: `\`${player.queue.length} left\``, inline: true },
+ 
+            { name: '📊 Session Tracker', value: `🎵 **${player._songsPlayed}** tracks • ⏱ **${getSessionTime(player)}** uptime`, inline: false },
+            { name: '⏭ UP NEXT', value: upNextStr, inline: false }
+        )
+        .setFooter({ text: 'Ultra Bot Music Pro • Advanced Audio Hub • v2.0' })
         .setTimestamp();
 
-    // Row 1: ⏮ Previous | ⏯ Pause/Resume | ⏭ Skip | 🔁 Loop | 🔀 Shuffle
+    return embed;
+}
+
+/**
+ * Modern Control Buttons
+ */
+function buildControlButtons(isPaused = false, autoplay = true) {
     const row1 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-            .setCustomId('music_previous')
-            .setEmoji('⏮')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(player.history.length === 0),
+            .setCustomId('music_prev')
+            .setEmoji('⏮️')
+            .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
             .setCustomId('music_pause')
-            .setEmoji(player.paused ? '▶️' : '⏸️')
-            .setStyle(player.paused ? ButtonStyle.Success : ButtonStyle.Primary),
+            .setEmoji(isPaused ? '▶️' : '⏸️')
+            .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary), // Blurple/Green swap
         new ButtonBuilder()
             .setCustomId('music_skip')
-            .setEmoji('⏭')
+            .setEmoji('⏭️')
             .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
             .setCustomId('music_loop')
-            .setEmoji(LOOP_EMOJIS[player.loopMode])
-            .setStyle(player.loopMode === 0 ? ButtonStyle.Secondary : ButtonStyle.Success),
+            .setEmoji('🔁')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId('music_stop')
+            .setEmoji('⏹️')
+            .setStyle(ButtonStyle.Danger) // Red for stop
+    );
+
+    const row2 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId('music_shuffle')
             .setEmoji('🔀')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(player.songs.length < 2),
-    );
-
-    // Row 2: 🔊 Vol+ | 🔉 Vol- | ▶️ Autoplay | 📜 Queue | ⏹ Stop
-    const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('music_volup')
-            .setEmoji('🔊')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(player.volume >= 150),
+            .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
             .setCustomId('music_voldown')
             .setEmoji('🔉')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(player.volume <= 0),
+            .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
-            .setCustomId('music_autoplay')
-            .setEmoji('🤖')
-            .setLabel(`Autoplay: ${player.autoplay ? 'ON' : 'OFF'}`)
-            .setStyle(player.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary),
+            .setCustomId('music_volup')
+            .setEmoji('🔊')
+            .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
             .setCustomId('music_queue')
             .setEmoji('📜')
             .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
-            .setCustomId('music_stop')
-            .setEmoji('⏹')
-            .setStyle(ButtonStyle.Danger),
+            .setCustomId('music_autoplay')
+            .setEmoji('✨')
+            .setLabel(autoplay ? 'Autoplay On' : 'Autoplay Off')
+            .setStyle(autoplay ? ButtonStyle.Success : ButtonStyle.Secondary) // Green when enabled
     );
 
-    return { embeds: [embed], components: [row1, row2] };
+    return [row1, row2];
 }
 
+/**
+ * Standard Queue Embed
+ */
 function buildQueueEmbed(player) {
+    const songs = player.queue.songs;
+    const current = player.currentSong;
+    
     const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('📋 Music Queue');
+        .setColor('#1DB954')
+        .setTitle('📜 Live Queue')
+        .setDescription(
+            `**Now Playing**: [${current.title}](${current.url})\n` +
+            `━━━━━━━━━━━━━━━━━━━━`
+        )
+        .setTimestamp();
 
-    let description = '';
-    if (player.currentSong) {
-        description += `**▶️ Now Playing:**\n[${player.currentSong.title}](${player.currentSong.url}) — \`${player.currentSong.duration || 'Unknown'}\`\n\n`;
-    }
-
-    if (player.songs.length > 0) {
-        description += `**📋 Up Next (${player.songs.length} song${player.songs.length > 1 ? 's' : ''}):**\n`;
-        player.songs.slice(0, 15).forEach((s, i) => {
-            description += `**${i + 1}.** [${s.title}](${s.url}) — \`${s.duration || 'Unknown'}\`\n`;
-        });
-        if (player.songs.length > 15) description += `\n*...and ${player.songs.length - 15} more song(s)*`;
+    if (songs.length === 0) {
+        embed.addFields({ name: 'Up Next', value: '_The queue is empty. Add more songs or enable Autoplay!_' });
     } else {
-        description += '**Queue is empty.** Add songs with `/play`!';
+        const list = songs.slice(0, 10).map((s, i) => `\`${i + 1}.\` **[${s.title}](${s.url})**`).join('\n');
+        embed.addFields({ 
+            name: `Up Next (${songs.length} total)`, 
+            value: list + (songs.length > 10 ? `\n\n_...and ${songs.length - 10} more tracks_` : '') 
+        });
     }
 
-    embed.setDescription(description);
-    embed.setFooter({ text: `Volume: ${player.volume}% • Loop: ${LOOP_LABELS[player.loopMode]}` });
-    return { embeds: [embed], ephemeral: true };
+    embed.setFooter({ text: 'Ultra Bot Music • Precision Audio Engine' });
+
+    return embed;
 }
 
-module.exports = { buildMusicPanel, buildQueueEmbed, formatTime, parseDuration };
+module.exports = {
+    buildNowPlayingEmbed,
+    buildControlButtons,
+    buildQueueEmbed,
+    formatTime,
+    buildProgressBar,
+};

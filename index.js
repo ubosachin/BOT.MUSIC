@@ -1,70 +1,143 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const fs   = require('fs');
 const path = require('path');
-const { setupPlayDl } = require('./utils/playdlSetup');
-const { startDashboard } = require('./dashboard');
-const { keepAlive } = require('./utils/keepAlive');
+const dns  = require('dns');
 
+// Fix for macOS/Linux voice connection loops (prioritize IPv4)
+if (dns.setDefaultResultOrder) {
+    dns.setDefaultResultOrder('ipv4first');
+}
+const { Client, Collection, GatewayIntentBits } = require('discord.js');
+const { execSync } = require('child_process');
+const https = require('https');
+
+// ── Pre-flight: Ensure yt-dlp exists (Auto-download for Linux/Mac servers) ───
+async function ensureYtDlp() {
+    const platform = process.platform;
+    const isLinux = platform === 'linux';
+    const isMac   = platform === 'darwin';
+    const localPath = path.join(__dirname, 'yt-dlp');
+    
+    // Check if it already exists in PATH or local folder
+    try {
+        execSync('yt-dlp --version', { stdio: 'ignore' });
+        return; 
+    } catch {}
+    
+    if (fs.existsSync(localPath)) return;
+
+    if (isLinux || isMac) {
+        console.log(`[Setup] 📥 yt-dlp not found on ${platform}. Downloading standalone binary...`);
+        
+        // GitHub release URLs for different platforms
+        const suffix = isMac ? '_macos' : '';
+        const url = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp${suffix}`;
+        
+        return new Promise((resolve, reject) => {
+            const file = fs.createWriteStream(localPath);
+            https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+                // Handle Redirects (GitHub does this)
+                if (res.statusCode === 301 || res.statusCode === 302) {
+                    https.get(res.headers.location, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res2) => {
+                        res2.pipe(file);
+                        res2.on('end', () => {
+                            fs.chmodSync(localPath, '755');
+                            console.log('[Setup] ✅ yt-dlp downloaded and permissions set.');
+                            resolve();
+                        });
+                    });
+                    return;
+                }
+                res.pipe(file);
+                res.on('end', () => {
+                    fs.chmodSync(localPath, '755');
+                    console.log('[Setup] ✅ yt-dlp downloaded and permissions set.');
+                    resolve();
+                });
+            }).on('error', (err) => {
+                fs.unlink(localPath, () => {});
+                console.error('[Setup] ❌ Failed to download yt-dlp:', err.message);
+                resolve();
+            });
+        });
+    }
+}
+
+// ── Client setup ──────────────────────────────────────────────────────────────
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildMessages,
     ],
 });
 
-client.commands = new Collection();
-client.players  = new Map();
+// Storage
+client.commands      = new Collection(); // Slash command handlers
+client.musicPlayers  = new Map();        // guildId → MusicPlayer
 
-// Load Commands
-for (const file of fs.readdirSync(path.join(__dirname, 'commands')).filter(f => f.endsWith('.js'))) {
-    const cmd = require(path.join(__dirname, 'commands', file));
-    if ('data' in cmd && 'execute' in cmd) client.commands.set(cmd.data.name, cmd);
-}
-
-// Load Events
-for (const file of fs.readdirSync(path.join(__dirname, 'events')).filter(f => f.endsWith('.js'))) {
-    const evt = require(path.join(__dirname, 'events', file));
-    if (evt.once) client.once(evt.name, (...a) => evt.execute(...a, client));
-    else          client.on(evt.name,   (...a) => evt.execute(...a, client));
-}
-
-const { addLog } = require('./utils/logger');
-const { deployCommands } = require('./utils/deployer');
-
-addLog('INFO', 'Bot process initialized.');
-
-// 1. Start the dashboard IMMEDIATELY (Fixes Render "No open ports" error)
-startDashboard(client);
-
-// 2. Initialise play-dl and deploy commands in background
-setupPlayDl().then(async () => {
-    addLog('INFO', 'play-dl setup complete.');
-    
-    if (!process.env.DISCORD_TOKEN) {
-        console.error('❌ CRITICAL: DISCORD_TOKEN is missing in environment variables!');
-        addLog('ERROR', 'DISCORD_TOKEN is missing in Render environment variables.');
-        return;
-    }
-
-    // Login immediately
-    client.login(process.env.DISCORD_TOKEN).catch(err => {
-        console.error('❌ Failed to login to Discord:', err.message);
-        addLog('ERROR', `Login failed: ${err.message}`);
-    });
-
-    // Deploy slash commands programmatically in background (don't await here to avoid blocking login)
-    deployCommands().then(() => {
-        addLog('INFO', 'Slash commands sync complete.');
-    }).catch(err => {
-        addLog('ERROR', `Slash commands sync failed: ${err.message}`);
-    });
-    
-    // 24/7 Connectivity: Self-ping the dashboard
-    if (process.env.DASHBOARD_URL) {
-        keepAlive(process.env.DASHBOARD_URL);
-    }
-}).catch(err => {
-    console.error('❌ Initialization error:', err);
+// ── Global error handling ─────────────────────────────────────────────────────
+process.on('unhandledRejection', err => {
+    console.error('[Process] Unhandled rejection:', err);
 });
+process.on('uncaughtException', err => {
+    console.error('[Process] Uncaught exception:', err);
+});
+
+// ── Startup ───────────────────────────────────────────────────────────────────
+(async () => {
+    console.clear();
+    console.log('\x1b[32m%s\x1b[0m', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('\x1b[32m%s\x1b[0m', '  🚀 STARTING ULTRA BOT MUSIC PRO');
+    console.log('\x1b[32m%s\x1b[0m', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    // 1. Ensure yt-dlp is ready
+    await ensureYtDlp();
+
+    // 2. Load Commands
+    const commandsPath = path.join(__dirname, 'commands');
+    for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'))) {
+        const command = require(path.join(commandsPath, file));
+        if ('data' in command && 'execute' in command) {
+            client.commands.set(command.data.name, command);
+            console.log(`[System] Initialized /${command.data.name}`);
+        }
+    }
+
+    // 3. Load Events
+    const eventsPath = path.join(__dirname, 'events');
+    for (const file of fs.readdirSync(eventsPath).filter(f => f.endsWith('.js'))) {
+        const event = require(path.join(eventsPath, file));
+        if (event.once) {
+            client.once(event.name, (...args) => event.execute(...args));
+        } else {
+            client.on(event.name, (...args) => event.execute(...args));
+        }
+    }
+
+    // 4. Login
+    if (!process.env.DISCORD_TOKEN) {
+        console.error('[Critical] DISCORD_TOKEN is missing in .env!');
+        process.exit(1);
+    }
+    await client.login(process.env.DISCORD_TOKEN);
+})();
+
+// ── Graceful Shutdown ────────────────────────────────────────────────────────
+const handleShutdown = async (signal) => {
+    console.log(`\n[Process] Received ${signal}. Shutting down gracefully...`);
+    
+    const guildCount = client.musicPlayers.size;
+    if (guildCount > 0) {
+        console.log(`[Process] Cleaning up ${guildCount} active music players...`);
+        for (const player of client.musicPlayers.values()) {
+            player.destroy();
+        }
+    }
+
+    client.destroy();
+    console.log('[Process] Finalized cleanup. Goodbye!');
+    process.exit(0);
+};
+
+process.on('SIGINT', () => handleShutdown('SIGINT'));
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));

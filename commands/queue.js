@@ -4,13 +4,16 @@ const { buildQueueEmbed } = require('../ui/musicPanel');
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('queue')
-        .setDescription('Shows the current music queue.'),
+        .setDescription('Show the current music queue'),
 
-    async execute(interaction, client) {
-        const player = client.players.get(interaction.guild.id);
-        if (!player || (!player.currentSong && player.songs.length === 0)) {
-            return interaction.reply({ content: '❔ The queue is empty. Use `/play` to add songs!', ephemeral: true });
+    async execute(interaction) {
+        const player = interaction.client.musicPlayers.get(interaction.guildId);
+
+        if (!player || (!player.currentSong && player.queue.isEmpty)) {
+            return interaction.reply({ content: '❌ The queue is currently empty!', ephemeral: true });
         }
-        return interaction.reply(buildQueueEmbed(player));
+
+        const embed = buildQueueEmbed(player);
+        await interaction.reply({ embeds: [embed], ephemeral: false });
     },
 };
