@@ -11,13 +11,17 @@ const { Client, Collection, GatewayIntentBits } = require('discord.js');
 const { execSync } = require('child_process');
 const https = require('https');
 const express = require('express');
+const path = require('path');
 
 // ── Production Audio Engine Link ─────────────────────────────────────────────
 try {
     const ffmpegPath = require('ffmpeg-static');
     if (ffmpegPath) {
         process.env.FFMPEG_PATH = ffmpegPath;
-        console.log('[System] Audio Engine Linked: FFmpeg stable');
+        // Also add to system PATH so prism-media/others find it automatically
+        const ffmpegDir = path.dirname(ffmpegPath);
+        process.env.PATH = ffmpegDir + path.delimiter + process.env.PATH;
+        console.log(`[System] Audio Engine Linked: ${ffmpegPath}`);
     }
 } catch (e) {
     console.warn('[System] Warning: ffmpeg-static not found. Falling back to system path.');

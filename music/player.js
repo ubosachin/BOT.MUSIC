@@ -146,6 +146,15 @@ function createYtDlpStream(url, isLive = false, forceNoCookies = false) {
         }
     });
 
+    // Handle broken pipe errors more gracefully
+    proc.on('error', err => {
+        if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
+            // Harmless in many cases when player stops
+            return;
+        }
+        console.error(`[yt-dlp] Process error: ${err.message}`);
+    });
+
     return { stream: proc.stdout, proc, getError: () => lastError };
 }
 
@@ -424,8 +433,13 @@ class MusicPlayer {
             });
             this.resource.volume.setVolume(this.volume / 100);
 
+            // Catch the silent termination
             this.resource.playStream.on('error', err => {
-                console.error(`[Debug] Resource PlayStream Error: ${err.message}`);
+                console.error(`[Debug] Resource Internal Stream Error: ${err.message}`);
+            });
+            
+            this.resource.playStream.on('end', () => {
+                console.log('[Debug] Resource playStream ended.');
             });
 
             console.log('[Player] Stream ready');
