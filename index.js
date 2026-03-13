@@ -12,6 +12,17 @@ const { execSync } = require('child_process');
 const https = require('https');
 const express = require('express');
 
+// ── Production Audio Engine Link ─────────────────────────────────────────────
+try {
+    const ffmpegPath = require('ffmpeg-static');
+    if (ffmpegPath) {
+        process.env.FFMPEG_PATH = ffmpegPath;
+        console.log('[System] Audio Engine Linked: FFmpeg stable');
+    }
+} catch (e) {
+    console.warn('[System] Warning: ffmpeg-static not found. Falling back to system path.');
+}
+
 // ── Render/Cloud Port Binding ────────────────────────────────────────────────
 const app = express();
 const port = process.env.PORT || 10000;

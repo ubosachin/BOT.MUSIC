@@ -93,7 +93,7 @@ function createYtDlpStream(url, isLive = false, forceNoCookies = false) {
     //   - Livestreams:   just take bestaudio (HLS/DASH — no webm available)
     const fmt = isLive
         ? 'bestaudio'
-        : 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best';
+        : 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best';
 
     // ── Client strategy ───────────────────────────────────────────────────────
     // 1. web_creator  — bypasses n-challenge/signature when cookies are present
@@ -412,7 +412,7 @@ class MusicPlayer {
                         } else {
                             done(() => resolve());
                         }
-                    }, 450);
+                    }, 800); // Increased wait for stability
                 });
             });
 
