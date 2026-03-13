@@ -142,28 +142,38 @@ async function handleQuery(interaction, player, query) {
                         const v    = info.video_details;
                         song = {
                             title:         v.title,
-                            artist:        v.channel?.name || 'YouTube',
-                            url:           v.url,
-                            thumbnail:     v.thumbnails?.[0]?.url || '',
+                            artist:        v.channel?.name || 'Unknown',
+                            url:           videoUrl,
+                            streamUrl:     videoUrl,
                             duration:      v.durationRaw,
                             durationInSec: v.durationInSec,
+                            thumbnail:     v.thumbnails[0].url,
                             source:        'youtube',
                         };
-                    } catch (e) {
-                        if (isBotError(e)) {
+                    } catch (infoErr) {
+                        console.warn(`[play.js] play-dl info failed: ${infoErr.message}. Trying yt-dlp metadata...`);
+                        // Fallback to yt-dlp for metadata if play-dl info fails
+                        try {
                             song = await getYtDlpInfo(videoUrl);
-                        } else throw e;
+                        } catch (ytdlpInfoErr) {
+                            console.warn(`[play.js] yt-dlp info also failed for ${videoUrl}: ${ytdlpInfoErr.message}`);
+                        }
                     }
                 }
-            } catch (pdlErr) {}
+            } catch (searchErr) {
+                console.warn(`[play.js] play-dl search rate limited (429) or failed: ${searchErr.message}. Pivoting to yt-dlp search...`);
+            }
 
-            // Robust fallback: yt-dlp search directly
+            // High-Stability Fallback: yt-dlp Search
             if (!song) {
                 try {
                     song = await getYtDlpSearch(query);
-                } catch (yErr) {
-                    // One last try with "audio" keyword
-                    song = await getYtDlpSearch(`${query} audio`).catch(() => null);
+                    if (!song) {
+                        // One last try with "audio" keyword
+                        song = await getYtDlpSearch(`${query} audio`).catch(() => null);
+                    }
+                } catch (ytdlpErr) {
+                    console.warn(`[play.js] yt-dlp search failed: ${ytdlpErr.message}`);
                 }
             }
 

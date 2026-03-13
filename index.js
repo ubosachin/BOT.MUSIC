@@ -10,6 +10,21 @@ if (dns.setDefaultResultOrder) {
 const { Client, Collection, GatewayIntentBits } = require('discord.js');
 const { execSync } = require('child_process');
 const https = require('https');
+const express = require('express');
+
+// ── Render/Cloud Port Binding ────────────────────────────────────────────────
+const app = express();
+const port = process.env.PORT || 10000;
+app.get('/', (req, res) => res.send('🚀 Ultra Bot Music Pro is running.'));
+app.listen(port, '0.0.0.0', () => console.log(`[System] Web server listening on port ${port}`));
+
+// ── Production Shield (Error Handlers) ────────────────────────────────────────
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[Critical] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('[Critical] Uncaught Exception:', err);
+});
 
 // ── Pre-flight: Ensure yt-dlp exists (Auto-download for Linux/Mac servers) ───
 async function ensureYtDlp() {

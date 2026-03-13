@@ -139,6 +139,13 @@ function createYtDlpStream(url, isLive = false, forceNoCookies = false) {
         }
     });
 
+    proc.stdout.on('data', chunk => {
+        if (!proc.hasSentData) {
+            console.log(`[Debug] yt-dlp PIPE: First chunk received (${chunk.length} bytes)`);
+            proc.hasSentData = true;
+        }
+    });
+
     return { stream: proc.stdout, proc, getError: () => lastError };
 }
 
@@ -183,6 +190,9 @@ class MusicPlayer {
             this._onIdle();
         });
 
+        this.audioPlayer.on('stateChange', (oldState, newState) => {
+            console.log(`[Debug] AudioPlayer: ${oldState.status} -> ${newState.status}`);
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -196,7 +206,23 @@ class MusicPlayer {
             guildId:        this.guildId,
             adapterCreator: voiceChannel.guild.voiceAdapterCreator,
             selfDeaf:       true,
+            debug:          true,
         });
+
+        this.connection.on('stateChange', (oldState, newState) => {
+            console.log(`[Debug] Connection: ${oldState.status} -> ${newState.status}`);
+        });
+
+        // Ensure we reach READY state before subscribing
+        try {
+            await entersState(this.connection, VoiceConnectionStatus.Ready, 30_000);
+            console.log(`[Player] Voice Connection Ready in ${this.guildId} ✅`);
+            this.connection.subscribe(this.audioPlayer);
+        } catch (err) {
+            console.error(`[Player] FAILED to reach READY state: ${err.message}`);
+            this.destroy();
+            throw err;
+        }
 
         this.connection.on(VoiceConnectionStatus.Disconnected, async () => {
             try {
@@ -209,7 +235,6 @@ class MusicPlayer {
             }
         });
 
-        this.connection.subscribe(this.audioPlayer);
     }
 
     /** Add a song to queue; start playback if idle. */
@@ -392,11 +417,16 @@ class MusicPlayer {
             });
 
             // ── Step 3: Hand stream to @discordjs/voice ───────────────────
+            console.log(`[Debug] Creating AudioResource (Type: Arbitrary)...`);
             this.resource = createAudioResource(ytStream, {
                 inputType:    StreamType.Arbitrary,
                 inlineVolume: true,
             });
             this.resource.volume.setVolume(this.volume / 100);
+
+            this.resource.playStream.on('error', err => {
+                console.error(`[Debug] Resource PlayStream Error: ${err.message}`);
+            });
 
             console.log('[Player] Stream ready');
             this.audioPlayer.play(this.resource);
