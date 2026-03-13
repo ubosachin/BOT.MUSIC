@@ -21,6 +21,7 @@ const {
 } = require('@discordjs/voice');
 
 const play           = require('play-dl');        // search + metadata only
+const prism          = require('prism-media');
 const { spawn }      = require('child_process');
 const { execSync }   = require('child_process');
 const path           = require('path');
@@ -104,7 +105,7 @@ function createYtDlpStream(url, isLive = false, forceNoCookies = false) {
         '--extractor-args', 'youtube:player_client=ios,android,web_creator',
         '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
         '--force-ipv4',
-        '--remote-components', 'ejs:github'
+        '--buffer-size', '128K',
     ];
 
     const args = buildYtDlpArgs(url, fmt, useCookies ? COOKIES_FILE : null, primaryArgs);
@@ -425,10 +426,23 @@ class MusicPlayer {
                 });
             });
 
-            // ── Step 3: Hand stream to @discordjs/voice ───────────────────
-            console.log(`[Debug] Creating AudioResource (Type: Arbitrary)...`);
-            this.resource = createAudioResource(ytStream, {
-                inputType:    StreamType.Arbitrary,
+            // ── Step 3: Transcode to Raw PCM ─────────────────────────────
+            // Explicit transcoding is the most stable for cloud environments
+            const transcoder = new prism.FFmpeg({
+                args: [
+                    '-analyzeduration', '0',
+                    '-loglevel', '0',
+                    '-f', 's16le',
+                    '-ar', '48000',
+                    '-ac', '2',
+                ],
+            });
+
+            const streamPipe = ytStream.pipe(transcoder);
+
+            console.log(`[Debug] Creating AudioResource (Type: Raw PCM)...`);
+            this.resource = createAudioResource(streamPipe, {
+                inputType:    StreamType.Raw,
                 inlineVolume: true,
             });
             this.resource.volume.setVolume(this.volume / 100);

@@ -11,7 +11,6 @@ const { Client, Collection, GatewayIntentBits } = require('discord.js');
 const { execSync } = require('child_process');
 const https = require('https');
 const express = require('express');
-const path = require('path');
 
 // ── Production Audio Engine Link ─────────────────────────────────────────────
 try {
