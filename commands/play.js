@@ -130,55 +130,28 @@ async function handleQuery(interaction, player, query) {
         // Universal Search Fallback (YouTube Search via yt-dlp)
         try {
             await interaction.editReply('🔍 Spotify failed. Searching **Universal Database**...');
+            
+            // Tier 1: yt-dlp Search (More robust on Cloud IPs than play-dl)
             let song = null;
-
-            // Try play-dl standard search first
             try {
-                const results = await play.search(query, { limit: 1, source: { youtube: 'video' } });
-                if (results.length > 0) {
-                    const videoUrl = results[0].url;
-                    try {
-                        const info = await play.video_info(videoUrl);
-                        const v    = info.video_details;
-                        song = {
-                            title:         v.title,
-                            artist:        v.channel?.name || 'Unknown',
-                            url:           videoUrl,
-                            streamUrl:     videoUrl,
-                            duration:      v.durationRaw,
-                            durationInSec: v.durationInSec,
-                            thumbnail:     v.thumbnails[0].url,
-                            source:        'youtube',
-                        };
-                    } catch (infoErr) {
-                        console.warn(`[play.js] play-dl info failed: ${infoErr.message}. Trying yt-dlp metadata...`);
-                        // Fallback to yt-dlp for metadata if play-dl info fails
-                        try {
-                            song = await getYtDlpInfo(videoUrl);
-                        } catch (ytdlpInfoErr) {
-                            console.warn(`[play.js] yt-dlp info also failed for ${videoUrl}: ${ytdlpInfoErr.message}`);
-                        }
-                    }
-                }
-            } catch (searchErr) {
-                console.warn(`[play.js] play-dl search rate limited (429) or failed: ${searchErr.message}. Pivoting to yt-dlp search...`);
+                console.log(`[Search] Attempting yt-dlp search for "${query}"`);
+                song = await getYtDlpSearch(query);
+            } catch (ytdlpErr) {
+                console.warn(`[play.js] yt-dlp primary search failed: ${ytdlpErr.message}`);
             }
 
-            // High-Stability Fallback: yt-dlp Search
+            // Tier 2: Keyword-enriched search
             if (!song) {
                 try {
-                    song = await getYtDlpSearch(query);
-                    if (!song) {
-                        // One last try with "audio" keyword
-                        song = await getYtDlpSearch(`${query} audio`).catch(() => null);
-                    }
+                    console.log(`[Search] Attempting enriched search: "${query} audio"`);
+                    song = await getYtDlpSearch(`${query} audio`);
                 } catch (ytdlpErr) {
-                    console.warn(`[play.js] yt-dlp search failed: ${ytdlpErr.message}`);
+                    console.warn(`[play.js] enriched search also failed.`);
                 }
             }
 
             if (!song) {
-                return interaction.editReply('❌ No results found. Try a different search.');
+                return interaction.editReply('❌ No results found in the Universal Database. Try a different query.');
             }
 
             const pos = player.queue.length;

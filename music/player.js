@@ -550,23 +550,12 @@ class MusicPlayer {
 
                 for (const query of queries) {
                     if (picked) break;
-                    const results = await play.search(query, { limit: 5, source: { youtube: 'video' } });
-                    const fresh   = results.filter(r =>
-                        r.url &&
-                        !this._autoplaySeen.has(r.url) &&
-                        r.durationInSec > 30 &&
-                        r.durationInSec < 600
-                    );
-                    if (fresh.length > 0) {
-                        const p = fresh[0];
-                        picked = {
-                            title:         p.title,
-                            url:           p.url,
-                            thumbnail:     p.thumbnails?.[0]?.url || '',
-                            durationRaw:   p.durationRaw || '?',
-                            durationInSec: p.durationInSec || 0,
-                            source:        'youtube'
-                        };
+                    console.log(`[Player] Autoplay search via yt-dlp: "${query}"`);
+                    try {
+                        picked = await getYtDlpSearch(query);
+                        // Basic filtering for length/safety if needed, but getYtDlpSearch is usually precise
+                    } catch (e) {
+                        console.warn(`[Player] Autoplay search failed for query "${query}": ${e.message}`);
                     }
                 }
             }
