@@ -6,12 +6,12 @@
  * {
  *   title:         string   — display title
  *   artist:        string   — artist / channel name (optional)
- *   url:           string   — YouTube watch URL (always YouTube, even for Spotify sources)
+ *   url:           string   — source URL (Spotify or SoundCloud)
+ *   streamUrl:     string   — resolved SoundCloud audio URL
  *   thumbnail:     string   — artwork URL
- *   durationRaw:   string   — human-readable duration e.g. "3:45"
- *   durationInSec: number   — duration in seconds
+ *   duration:      number   — duration in seconds
  *   requestedBy:   GuildMember | null
- *   source:        'youtube' | 'spotify'  — origin of the metadata
+ *   source:        'spotify' | 'soundcloud'
  * }
  */
 

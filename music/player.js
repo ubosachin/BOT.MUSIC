@@ -1,13 +1,3 @@
-/**
- * music/player.js
- * Core music player — manages voice connection, audio streaming,
- * queue handling, autoplay, loop modes, and the live control panel.
- *
- * Streaming backend: yt-dlp (subprocess) → piped stdout → createAudioResource
- * This is the most reliable approach for 2025+ YouTube extraction since
- * ytdl-core / play-dl cannot parse YouTube's n-transform function and get 403.
- */
-
 'use strict';
 
 const {
@@ -20,10 +10,8 @@ const {
     StreamType,
 } = require('@discordjs/voice');
 
-const play           = require('play-dl');        // search + metadata only
 const prism          = require('prism-media');
 const { spawn }      = require('child_process');
-const { execSync }   = require('child_process');
 const path           = require('path');
 const fs             = require('fs');
 
@@ -35,94 +23,8 @@ const {
 } = require('../ui/musicPanel');
 
 const { getSpotifyRecommendations } = require('../services/spotify');
+const { searchSoundCloud, getSoundCloudStream } = require('../services/soundcloud');
 
-const {
-    getYT_DLP,
-    COOKIES_FILE,
-    getYtDlpInfo,
-    getYtDlpSearch
-} = require('./ytdlp');
-
-// ── Initialize play-dl with cookies for metadata ──────────────────────────────
-if (COOKIES_FILE && fs.existsSync(COOKIES_FILE)) {
-    try {
-        const content = fs.readFileSync(COOKIES_FILE, 'utf8');
-        const lines = content.split('\n');
-        const cookieArray = [];
-        for (const line of lines) {
-            if (!line || line.startsWith('#')) continue;
-            const parts = line.split('\t');
-            if (parts.length >= 7) {
-                cookieArray.push(`${parts[5].trim()}=${parts[6].trim()}`);
-            }
-        }
-        if (cookieArray.length > 0) {
-            play.setToken({
-                youtube: {
-                    cookie: cookieArray.join('; ')
-                }
-            });
-            console.log('[Player] ✅ play-dl metadata cookies set.');
-        }
-    } catch (err) {
-        console.warn('[Player] ⚠️  Failed to initialize play-dl cookies:', err.message);
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-/**
- * @param {string} url - Full YouTube watch URL
- * @returns {{ stream: NodeJS.ReadableStream, proc: import('child_process').ChildProcess }}
- */
-function buildYtDlpArgs(url, fmt, cookiesFile, clientArgs) {
-    const args = [
-        '-f', fmt,
-        '--no-playlist',
-        '--quiet',
-        '--js-runtimes', 'node',
-        ...clientArgs,
-        '-o', '-',
-    ];
-    if (cookiesFile) args.push('--cookies', cookiesFile);
-    args.push(url);
-    return args;
-}
-
-/**
- * Creates a high-stability audio pipeline using FFmpeg.
- * It takes a direct stream URL and transcodes it to Ogg/Opus.
- */
-function createFFmpegStream(url) {
-    const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
-    const args = [
-        '-analyzeduration', '0',
-        '-loglevel', '0',
-        '-i', url,
-        '-f', 's16le',
-        '-ar', '48000',
-        '-ac', '2',
-        'pipe:1',
-    ];
-
-    const proc = spawn(ffmpegBin, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    proc.stderr.on('data', chunk => {
-        const line = chunk.toString().trim();
-        if (line) console.warn(`[FFmpeg] ${line}`);
-    });
-
-    proc.on('error', err => {
-        if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
-        console.error(`[FFmpeg] Process error: ${err.message}`);
-    });
-
-    return { stream: proc.stdout, proc };
-}
-
-
-// ─────────────────────────────────────────────────────────────────────────────
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 class MusicPlayer {
@@ -151,7 +53,6 @@ class MusicPlayer {
         this._autoplayFetching = false;
         this._inactivityTimer  = null;
         this._panelInterval    = null;
-        this._ytdlpProc        = null;  // track yt-dlp subprocess
 
         // ── Audio Player ──────────────────────────────────────────────
         this.audioPlayer = createAudioPlayer();
@@ -171,7 +72,6 @@ class MusicPlayer {
     // Public API
     // ─────────────────────────────────────────────────────────────────
 
-    /** Connect to a voice channel. */
     async join(voiceChannel) {
         this.connection = joinVoiceChannel({
             channelId:      voiceChannel.id,
@@ -185,7 +85,6 @@ class MusicPlayer {
             console.log(`[Debug] Connection: ${oldState.status} -> ${newState.status}`);
         });
 
-        // Ensure we reach READY state before subscribing
         try {
             await entersState(this.connection, VoiceConnectionStatus.Ready, 30_000);
             console.log(`[Player] Voice Connection Ready in ${this.guildId} ✅`);
@@ -206,10 +105,8 @@ class MusicPlayer {
                 this.destroy();
             }
         });
-
     }
 
-    /** Add a song to queue; start playback if idle. */
     async addSong(song, member) {
         song.requestedBy = member;
         this.queue.add(song);
@@ -220,12 +117,10 @@ class MusicPlayer {
         }
     }
 
-    /** Skip current track. */
     skip() {
         this.audioPlayer.stop(true);
     }
 
-    /** Toggle pause / resume. Returns new paused state. */
     togglePause() {
         if (this._paused) {
             this.audioPlayer.unpause();
@@ -240,7 +135,6 @@ class MusicPlayer {
 
     get isPaused() { return this._paused; }
 
-    /** Cycle loop: none → song → queue → none. */
     cycleLoop() {
         if (this.loopMode === 'none')       this.loopMode = 'song';
         else if (this.loopMode === 'song')  this.loopMode = 'queue';
@@ -249,13 +143,11 @@ class MusicPlayer {
         return this.loopMode;
     }
 
-    /** Shuffle the queue. */
     shuffle() {
         this.queue.shuffle();
         this._refreshPanel();
     }
 
-    /** Set volume 0-100. */
     setVolume(val) {
         this.volume = Math.max(0, Math.min(100, val));
         if (this.resource?.volume) {
@@ -264,7 +156,6 @@ class MusicPlayer {
         this._refreshPanel();
     }
 
-    /** Toggle autoplay. Returns new state. */
     toggleAutoplay() {
         this.autoplay = !this.autoplay;
         if (!this.autoplay) this._autoplaySeen.clear();
@@ -272,7 +163,6 @@ class MusicPlayer {
         return this.autoplay;
     }
 
-    /** Play previous track from history. */
     async playPrevious() {
         if (this._history.length === 0) return false;
         const prev = this._history.pop();
@@ -283,14 +173,9 @@ class MusicPlayer {
         return true;
     }
 
-    /** Stop music and destroy player. */
     stop() {
         this.queue.clear();
         this._paused = false;
-        if (this._ytdlpProc) {
-            try { this._ytdlpProc.kill('SIGTERM'); } catch {}
-            this._ytdlpProc = null;
-        }
         this.audioPlayer.stop(true);
         this.currentSong = null;
         this._deletePanel();
@@ -298,21 +183,15 @@ class MusicPlayer {
         this.destroy();
     }
 
-    /** Destroy voice connection and clean up. */
     destroy() {
         this._clearInactivity();
         this._stopPanelRefresh();
         this._deletePanel();
-        if (this._ytdlpProc) {
-            try { this._ytdlpProc.kill('SIGTERM'); } catch {}
-            this._ytdlpProc = null;
-        }
         try { this.connection?.destroy(); } catch {}
         this.client.musicPlayers.delete(this.guildId);
         console.log(`[Player] Destroyed player for guild ${this.guildId}`);
     }
 
-    /** Get current playback position in seconds. */
     getCurrentTime() {
         if (!this.resource) return 0;
         return Math.floor(this.resource.playbackDuration / 1000);
@@ -322,7 +201,7 @@ class MusicPlayer {
     // Internal helpers
     // ─────────────────────────────────────────────────────────────────
 
-    async _playCurrent(retries = 0, forceNoCookies = false) {
+    async _playCurrent(retries = 0) {
         const song = this.queue.shift();
         if (!song) {
             await this._tryAutoplay();
@@ -333,45 +212,37 @@ class MusicPlayer {
         this.currentSong = song;
         this._paused = false;
 
-        // Kill any lingering yt-dlp process from a previous song
-        if (this._ytdlpProc) {
-            try { this._ytdlpProc.kill('SIGTERM'); } catch {}
-            this._ytdlpProc = null;
-        }
-
         try {
-            // ── Step 1: Validate / recover URL ───────────────────────────
+            // ── Step 1: SoundCloud Matching ──────────────────────────────
             let streamUrl = song.streamUrl || song.url;
-            const isValidYtUrl = /^https?:\/\/(www\.)?(youtube\.com\/watch\?|youtu\.be\/)/.test(streamUrl);
+            const isSoundCloudUrl = streamUrl?.includes('soundcloud.com');
 
-            if (!isValidYtUrl) {
-                console.warn(`[Player] No stream URL for "${song.title}" — searching YouTube...`);
-                const results = await play.search(song.title + (song.artist ? ` ${song.artist}` : ''), { limit: 1 });
-                if (!results.length) throw new Error('Re-search returned no results.');
-                streamUrl = results[0].url;
-                song.streamUrl = streamUrl; 
+            if (!isSoundCloudUrl) {
+                console.log(`[Spotify] Converting to SoundCloud search...`);
+                const searchQuery = `${song.artist} ${song.title}`;
+                const match = await searchSoundCloud(searchQuery);
+                
+                if (!match) {
+                    throw new Error('⚠️ Could not find this track on SoundCloud.');
+                }
+                
+                streamUrl = match.url;
+                song.streamUrl = streamUrl;
+                // Update missing metadata from SoundCloud if needed
+                if (!song.duration) song.duration = match.duration;
             }
-            console.log(`[Player] Validating Stream: ${streamUrl}`);
 
-            // ── Step 2: Spawn yt-dlp, pipe audio → Discord ────────────────
-            // ── Step 2: Resolve Direct URL & Transcode ──────────────────
-            console.log(`[Player] Resolving direct stream URL…`);
-            const info = await getYtDlpInfo(streamUrl);
-            const rawStreamUrl = info.streamUrl;
+            console.log(`[SoundCloud] Stream ready`);
+            const stream = await getSoundCloudStream(streamUrl);
 
-            console.log(`[Player] Fetching stream via FFmpeg-Core…`);
-            const { stream: ffStream, proc: ffProc } = createFFmpegStream(rawStreamUrl);
-            this._ytdlpProc = ffProc;
-
-            // ── Step 3: Hand stream to @discordjs/voice ───────────────────
-            console.log(`[Debug] Creating AudioResource (Type: Raw PCM)...`);
-            this.resource = createAudioResource(ffStream, {
-                inputType:    StreamType.Raw,
+            // ── Step 2: Create Audio Resource ────────────────────────────
+            console.log(`[Debug] Creating AudioResource (Type: Arbitrary)...`);
+            this.resource = createAudioResource(stream, {
+                inputType:    StreamType.Arbitrary,
                 inlineVolume: true,
             });
             this.resource.volume.setVolume(this.volume / 100);
 
-            // Catch the silent termination
             this.resource.playStream.on('error', err => {
                 console.error(`[Debug] Resource Internal Stream Error: ${err.message}`);
             });
@@ -380,7 +251,6 @@ class MusicPlayer {
                 console.log('[Debug] Resource playStream ended.');
             });
 
-            console.log('[Player] Stream ready');
             this.audioPlayer.play(this.resource);
             if (!this._songsPlayed) this._songsPlayed = 0;
             this._songsPlayed++;
@@ -395,43 +265,14 @@ class MusicPlayer {
         } catch (err) {
             console.error(`[Player] Stream failed for "${song.title}": ${err.message}`);
 
-            // User Requirement: If YouTube streaming fails, retry search with keywords
-            if (retries === 0) {
-                console.log(`[Player] 🔄 Retrying search with keywords for "${song.title}"…`);
-                try {
-                    const keywords = ['lyrics', 'audio', 'official'];
-                    let found = null;
-                    for (const kw of keywords) {
-                        try {
-                            const query = `${song.title} ${song.artist || ''} ${kw}`;
-                            const res = await getYtDlpSearch(query);
-                            if (res) { 
-                                found = res; 
-                                break; 
-                            }
-                        } catch (e) {}
-                    }
-                    if (found) {
-                        console.log(`[Player] ✅ Found alternative stream: ${found.url}`);
-                        song.streamUrl = found.url;
-                        this.queue.songs.unshift(song);
-                        return this._playCurrent(retries + 1);
-                    }
-                } catch (e) {
-                    console.error('[Player] Keyword retry failed.');
-                }
-            }
-
             if (retries < 2) {
                 console.log(`[Player] Skipping to next song after failure…`);
-                this.textChannel.send('⚠️ Could not find a playable version of this track.').catch(() => {});
+                this.textChannel.send(`⚠️ Stream failed for **${song.title}**: ${err.message}`).catch(() => {});
                 this.currentSong = null;
                 await this._playCurrent(retries + 1);
             } else {
                 console.error('[Player] Too many consecutive errors — stopping.');
-                this.textChannel
-                    .send('❌ Too many playback errors. Stopping.')
-                    .catch(() => {});
+                this.textChannel.send('❌ Too many playback errors. Stopping.').catch(() => {});
                 this.currentSong = null;
                 this._setInactivity();
                 this._deletePanel();
@@ -456,23 +297,13 @@ class MusicPlayer {
     }
 
     async _tryAutoplay() {
-        if (!this.autoplay) {
-            console.log('[Player] Autoplay is OFF — stopping after queue end.');
+        if (!this.autoplay || !this.currentSong) {
             this._setInactivity();
             this._deletePanel();
             return;
         }
 
-        if (!this.currentSong) {
-            this._setInactivity();
-            this._deletePanel();
-            return;
-        }
-
-        if (this._autoplayFetching) {
-            console.log('[Player] Autoplay fetch already in progress — skipping.');
-            return;
-        }
+        if (this._autoplayFetching) return;
 
         this._autoplayFetching = true;
         const baseSong = this.currentSong;
@@ -481,56 +312,18 @@ class MusicPlayer {
         try {
             this._autoplaySeen.add(baseSong.url);
 
-            let picked = null;
-
-            // 1. Try Spotify recommendations FIRST
-            if (baseSong.spotifyId) {
-                try {
-                    picked = await getSpotifyRecommendations(baseSong.spotifyId);
-                    if (picked && this._autoplaySeen.has(picked.url)) picked = null; // already heard
-                } catch (err) {
-                    console.warn('[Player] Spotify recommendations failed. Falling back to YouTube search...');
-                }
+            const nextMeta = await getSpotifyRecommendations(baseSong.spotifyId);
+            if (!nextMeta || this._autoplaySeen.has(nextMeta.url)) {
+                throw new Error('No fresh autoplay results.');
             }
 
-            // 2. Fallback to YouTube search if Spotify fails or no ID
-            if (!picked) {
-                const queries = [
-                    `${baseSong.title} official audio`,
-                    `${baseSong.artist} mix`,
-                ];
-
-                for (const query of queries) {
-                    if (picked) break;
-                    console.log(`[Player] Autoplay search via yt-dlp: "${query}"`);
-                    try {
-                        const candidate = await getYtDlpSearch(query);
-                        if (candidate && !this._autoplaySeen.has(candidate.url)) {
-                            picked = candidate;
-                        } else if (candidate) {
-                            console.log(`[Player] Autoplay skipped duplicate: ${candidate.title}`);
-                        }
-                    } catch (e) {
-                        console.warn(`[Player] Autoplay search failed for query "${query}": ${e.message}`);
-                    }
-                }
-            }
-
-            if (!picked) throw new Error('No fresh autoplay results.');
-
-            // Cap seen history at 50
             if (this._autoplaySeen.size > 50) {
                 this._autoplaySeen.delete(this._autoplaySeen.values().next().value);
             }
-            this._autoplaySeen.add(picked.url);
+            this._autoplaySeen.add(nextMeta.url);
 
-            const next = {
-                ...picked,
-                requestedBy: null,
-            };
-
-            this.queue.add(next);
-            this.textChannel.send(`✨ **Autoplay** › Next: **${next.title}** \`${next.durationRaw}\``).catch(() => {});
+            this.queue.add(nextMeta);
+            this.textChannel.send(`✨ **Autoplay** › Next: **${nextMeta.title}**`).catch(() => {});
             await this._playCurrent();
         } catch (err) {
             console.warn('[Player] Autoplay failed:', err.message);
@@ -541,8 +334,6 @@ class MusicPlayer {
             this._autoplayFetching = false;
         }
     }
-
-    // ── Panel helpers ─────────────────────────────────────────────────
 
     async _sendOrUpdatePanel() {
         const embed   = buildNowPlayingEmbed(this.currentSong, this);
@@ -590,15 +381,12 @@ class MusicPlayer {
         }
     }
 
-    // ── Inactivity timer ──────────────────────────────────────────────
-
     _setInactivity() {
         this._clearInactivity();
         this._inactivityTimer = setTimeout(() => {
             this.textChannel.send('👋 Leaving voice channel due to **5 minutes of inactivity**.').catch(() => {});
             this.destroy();
         }, INACTIVITY_TIMEOUT_MS);
-        console.log('[Player] Inactivity timer started (5 min).');
     }
 
     _clearInactivity() {
@@ -609,4 +397,4 @@ class MusicPlayer {
     }
 }
 
-module.exports = { MusicPlayer, getYtDlpInfo, getYtDlpSearch };
+module.exports = { MusicPlayer };

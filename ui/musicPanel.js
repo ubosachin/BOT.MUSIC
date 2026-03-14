@@ -3,6 +3,7 @@
  *
  * Ultra-premium, Gen-Z styled music control panel.
  * Designed to look like a modern streaming app (Spotify/Apple Music).
+ * Updated for Spotify + SoundCloud architecture.
  */
 
 'use strict';
@@ -57,16 +58,16 @@ function getSessionTime(player) {
  */
 function buildNowPlayingEmbed(song, player) {
     const cur = player.getCurrentTime();
-    const total = song.durationInSec || 0;
+    const total = song.duration || 0;
     
     // Dynamic color based on source
-    const embedColor = song.source === 'spotify' ? '#1DB954' : '#FF0000';
+    const embedColor = song.source === 'spotify' ? '#1DB954' : '#FF5500'; // Spotify Green vs SoundCloud Orange
 
     if (!player._sessionStart) player._sessionStart = Date.now();
     if (!player._songsPlayed) player._songsPlayed = 0;
 
     const progressBar = buildProgressBar(cur, total);
-    const timeInfo = `\`${formatTime(cur)} / ${song.durationRaw || formatTime(total)}\``;
+    const timeInfo = `\`${formatTime(cur)} / ${formatTime(total)}\``;
 
     // Queue Preview (Next 3 songs)
     const nextSongs = player.queue.songs.slice(0, 3);
@@ -78,7 +79,9 @@ function buildNowPlayingEmbed(song, player) {
         .setColor(embedColor)
         .setAuthor({
             name: player._paused ? '⏸️ PAUSED' : '🎵 NOW PLAYING',
-            iconURL: song.source === 'spotify' ? 'https://upload.wikimedia.org/wikipedia/commons/1/19/Spotify_logo_without_text.svg' : player.client.user.displayAvatarURL()
+            iconURL: song.source === 'spotify' 
+                ? 'https://upload.wikimedia.org/wikipedia/commons/1/19/Spotify_logo_without_text.svg' 
+                : 'https://upload.wikimedia.org/wikipedia/commons/a/af/Soundcloud_logo.svg'
         })
         .setTitle(song.title)
         .setURL(song.url)
@@ -87,23 +90,23 @@ function buildNowPlayingEmbed(song, player) {
             `━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
             `${progressBar}\n` +
             `${timeInfo}\n\n` +
-            `🔹 **Audio Source**: \`${song.source === 'spotify' ? 'Precision Spotify' : 'Standard YouTube'}\`\n` +
-            `🔹 **Decoding**: \`Lossless Engine v2\``
+            `🔹 **Audio Source**: \`Ultra SoundCloud\`\n` +
+            `🔹 **Metadata**: \`Hybrid Spotify Pro v3\``
         )
         .setImage(song.thumbnail)
         .addFields(
             { name: '👤 Requester', value: `${song.requestedBy ? `<@${song.requestedBy.id}>` : '`Autoplay ✨`'}`, inline: true },
-            { name: '🌐 Source', value: `\`${song.source === 'spotify' ? 'Spotify Pro' : 'YouTube'}\``, inline: true },
+            { name: '🌐 Driver', value: `\`${song.source.toUpperCase()}\``, inline: true },
             { name: '🔊 Volume', value: `\`${player.volume}%\``, inline: true },
             
             { name: '🔁 Loop', value: `\`${player.loopMode.toUpperCase()}\``, inline: true },
             { name: '✨ Smart Autoplay', value: `\`${player.autoplay ? 'Active' : 'Disabled'}\``, inline: true },
             { name: '📜 Queue', value: `\`${player.queue.length} left\``, inline: true },
- 
-            { name: '📊 Session Tracker', value: `🎵 **${player._songsPlayed}** tracks • ⏱ **${getSessionTime(player)}** uptime`, inline: false },
+
+            { name: '📊 Tracker', value: `🎵 **${player._songsPlayed}** tracks • ⏱ **${getSessionTime(player)}** uptime`, inline: false },
             { name: '⏭ UP NEXT', value: upNextStr, inline: false }
         )
-        .setFooter({ text: 'Ultra Bot Music Pro • Advanced Audio Hub • v2.0' })
+        .setFooter({ text: 'Ultra Bot Music Pro • Advanced Audio Hub • v3.0' })
         .setTimestamp();
 
     return embed;
@@ -121,7 +124,7 @@ function buildControlButtons(isPaused = false, autoplay = true) {
         new ButtonBuilder()
             .setCustomId('music_pause')
             .setEmoji(isPaused ? '▶️' : '⏸️')
-            .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary), // Blurple/Green swap
+            .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary),
         new ButtonBuilder()
             .setCustomId('music_skip')
             .setEmoji('⏭️')
@@ -133,7 +136,7 @@ function buildControlButtons(isPaused = false, autoplay = true) {
         new ButtonBuilder()
             .setCustomId('music_stop')
             .setEmoji('⏹️')
-            .setStyle(ButtonStyle.Danger) // Red for stop
+            .setStyle(ButtonStyle.Danger)
     );
 
     const row2 = new ActionRowBuilder().addComponents(
@@ -157,7 +160,7 @@ function buildControlButtons(isPaused = false, autoplay = true) {
             .setCustomId('music_autoplay')
             .setEmoji('✨')
             .setLabel(autoplay ? 'Autoplay On' : 'Autoplay Off')
-            .setStyle(autoplay ? ButtonStyle.Success : ButtonStyle.Secondary) // Green when enabled
+            .setStyle(autoplay ? ButtonStyle.Success : ButtonStyle.Secondary)
     );
 
     return [row1, row2];
@@ -180,7 +183,7 @@ function buildQueueEmbed(player) {
         .setTimestamp();
 
     if (songs.length === 0) {
-        embed.addFields({ name: 'Up Next', value: '_The queue is empty. Add more songs or enable Autoplay!_' });
+        embed.addFields({ name: 'Up Next', value: '_The queue is empty. Add more songs or enable Autoplay!_ ' });
     } else {
         const list = songs.slice(0, 10).map((s, i) => `\`${i + 1}.\` **[${s.title}](${s.url})**`).join('\n');
         embed.addFields({ 
@@ -189,7 +192,7 @@ function buildQueueEmbed(player) {
         });
     }
 
-    embed.setFooter({ text: 'Ultra Bot Music • Precision Audio Engine' });
+    embed.setFooter({ text: 'Ultra Bot Music • SoundCloud Engine' });
 
     return embed;
 }
