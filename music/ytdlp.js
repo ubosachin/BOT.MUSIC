@@ -119,18 +119,24 @@ async function getYtDlpInfo(url, forceNoCookies = false) {
 
             try {
                 const json = JSON.parse(trimmedStdout);
+                const directUrl = json.url || (json.formats && json.formats.find(f => f.url)?.url);
+                
+                if (!directUrl) {
+                    return reject(new Error('No direct stream URL found in yt-dlp output.'));
+                }
+
                 resolve({
                     title:         json.title,
                     artist:        json.uploader || json.channel || '',
                     url:           json.webpage_url || url,
-                    streamUrl:     json.url, // CRITICAL: This is the direct media URL
+                    streamUrl:     directUrl, 
                     thumbnail:     json.thumbnail || '',
                     durationRaw:   json.duration_string || '',
                     durationInSec: json.duration || 0,
                     source:        'youtube',
                 });
             } catch (err) {
-                reject(new Error('Failed to parse yt-dlp JSON output.'));
+                reject(new Error(`Failed to parse yt-dlp JSON: ${err.message}`));
             }
         });
     });
